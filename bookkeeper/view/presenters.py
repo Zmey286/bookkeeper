@@ -1,4 +1,5 @@
-"""Module contains MVPs to isolate view and db logics.
+"""
+Module contains MVPs to isolate view and db logics.
 """
 
 from typing import Protocol, Callable
