@@ -1,0 +1,178 @@
+"""
+Модуль описывает репозиторий, работающий с sqlite
+"""
+
+from typing import Any
+from datetime import datetime
+from inspect import get_annotations
+import sqlite3
+from bookkeeper.repository.abstract_repository import AbstractRepository, T
+
+
+def gettype(attr: Any) -> str:
+    """Returns type annotation for DB.
+    """
+    if isinstance(attr, int) or attr is None:
+        return 'INTEGER'
+    if isinstance(attr, float):
+        return 'REAL'
+    if isinstance(attr, datetime):
+        return 'timestamp'
+    return 'TEXT'
+
+
+def adddecor(value: str | int) -> str | int:
+    """Sets decoration to string value.
+    """
+    if isinstance(value, str):
+        return f'\'{value}\''
+    return value
+
+
+class SQLiteRepository(AbstractRepository[T]):
+    """SQL db repository.
+    """
+
+    def __init__(self, db_file: str, cls: type) -> None:
+        self.db_file = db_file
+        self.table_name = cls.__name__.lower()
+        self.fields = get_annotations(cls, eval_str=True)
+        self.fields.pop('pk')
+        self.cls_ty = cls
+
+        with sqlite3.connect(self.db_file) as con:
+            values = [(f'{x}', gettype(getattr(cls, x))) for x in self.fields]
+            qstring = ', '.join([f'{x} {ty}' for x, ty in values])
+            cur = con.cursor()
+            query = (f'CREATE TABLE IF NOT EXISTS {self.table_name} '
+                     f'(id INTEGER PRIMARY KEY, {qstring})')
+            cur.execute(query)
+        con.close()
+
+    def is_pk_in_db(self, cur: Any, pk: int) -> bool:
+        """Forms query to DB to check is records with pk exists.
+
+        Args:
+            cur (Any): cursor for query
+            pk (int): private key to check
+
+        Returns:
+            bool: True if record exists, overwise False
+        """
+        query = f'SELECT * FROM {self.table_name} WHERE id = {pk}'
+        res = cur.execute(query).fetchone()
+        return res is not None
+
+    def add(self, obj: T) -> int:
+        """Creates record about new object in DB.
+
+        Args:
+            obj (T): Object to create record about.
+
+        Raises:
+            ValueError: Trying to add  object without pk.
+            ValueError: Error while DB processing
+
+        Returns:
+            int: private key of inserted record.
+        """
+        if getattr(obj, 'pk', None) != 0:
+            raise ValueError(f'trying to add object {obj} with filled `pk` attribute')
+        names = ', '.join(self.fields.keys())
+        qmarks = ', '.join("?" * len(self.fields))
+        values = [getattr(obj, x) for x in self.fields]
+        with sqlite3.connect(self.db_file) as con:
+            cur = con.cursor()
+            cur.execute('PRAGMA foreign_keys = ON')
+            cur.execute(
+                f'INSERT INTO {self.table_name} ({names}) VALUES ({qmarks})',
+                values
+            )
+            assert isinstance(cur.lastrowid, int)
+            obj.pk = cur.lastrowid
+
+        con.close()
+        return obj.pk
+
+    def fill_object(self, result: Any) -> T:
+        """Fills attributes of object in accordance with results
+
+        Args:
+            result (Any): result of DB query.
+
+        Returns:
+            T: Filled object.
+        """
+        obj: T = self.cls_ty()
+        obj.pk = result[0]
+        for x, res in zip(self.fields, result[1:]):
+            setattr(obj, x, res)
+        return obj
+
+    def get(self, pk: int) -> T | None:
+        """ Получить объект по id """
+        with sqlite3.connect(
+                self.db_file,
+                detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as con:
+            query = f'SELECT * FROM {self.table_name} WHERE id = {pk}'
+            result = con.cursor().execute(query).fetchone()
+            if result is None:
+                return None
+            obj: T = self.fill_object(result)
+        con.close()
+        return obj
+
+    def get_all(self, where: dict[str, Any] | None = None) -> list[T]:
+        """
+        Получить все записи по некоторому условию
+        where - условие в виде словаря {'название_поля': значение}
+        если условие не задано (по умолчанию пусто), вернуть все записи
+        """
+        query = f'SELECT * FROM {self.table_name}'
+
+        condition = ''
+        if where is not None:
+            condition = ' WHERE'
+            for key, val in where.items():
+                condition += f' {key} = {adddecor(val)} AND'
+            query += condition.rsplit(' ', 1)[0]
+
+        with sqlite3.connect(
+                self.db_file,
+                detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as con:
+            results = con.cursor().execute(query).fetchall()
+            objs = [self.fill_object(result) for result in results]
+
+        con.close()
+        return objs
+
+    def update(self, obj: T) -> None:
+        """ Обновить данные об объекте. Объект должен содержать поле pk. """
+        values = [getattr(obj, x) for x in self.fields]
+        setter = [f'{col} = ?' for col in self.fields]
+        upd_stm = ', '.join(setter)
+
+        value_tuple = tuple(values)
+        with sqlite3.connect(self.db_file) as con:
+            if not self.is_pk_in_db(con.cursor(), obj.pk):
+                raise ValueError(f'No object with id={obj.pk} in DB.')
+            query = f'UPDATE {self.table_name} SET {upd_stm} WHERE id = {obj.pk}'
+            con.cursor().execute(query, value_tuple)
+        con.close()
+
+    def delete(self, pk: int) -> None:
+        """ Удалить запись """
+        with sqlite3.connect(self.db_file) as con:
+            if not self.is_pk_in_db(con.cursor(), pk):
+                raise KeyError(f'No object with id={pk} in DB.')
+            query = f'DELETE FROM {self.table_name} WHERE id = {pk}'
+            con.cursor().execute(query)
+        con.close()
+
+    def delete_all(self) -> None:
+        """Deletes all records in DB.
+        """
+        with sqlite3.connect(self.db_file) as con:
+            query = f'DELETE FROM {self.table_name}'
+            con.cursor().execute(query)
+        con.close()

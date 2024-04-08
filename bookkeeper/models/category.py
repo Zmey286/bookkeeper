@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterator
 
-from ..repository.abstract_repository import AbstractRepository
+from bookkeeper.repository.abstract_repository import AbstractRepository
 
 
 @dataclass
@@ -15,7 +15,7 @@ class Category:
     родителя (категория, подкатегорией которой является данная) в атрибуте parent.
     У категорий верхнего уровня parent = None
     """
-    name: str
+    name: str = ""
     parent: int | None = None
     pk: int = 0
 
